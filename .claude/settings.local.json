@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m uv run pytest 2>&1)"
+    ]
+  }
+}

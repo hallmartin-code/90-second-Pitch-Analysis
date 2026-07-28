@@ -1,0 +1,25 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# App data & generated artifacts
+data/
+storage/
+uv.lock.bak
+
+# Synthetic test fixtures — rebuilt on demand from tests/fixtures/build_fixtures.py
+tests/fixtures/*.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

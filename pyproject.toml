@@ -1,0 +1,42 @@
+[project]
+name = "pitch-deck-evaluator"
+version = "0.1.0"
+description = "90 Second Pitch Analysis — upload a pitch deck PDF, download a scored evaluation report PDF."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "sqlmodel>=0.0.21",
+    "pymupdf>=1.24",
+    "reportlab>=4.2",
+    "anthropic>=0.40",
+    "textstat>=0.7.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "httpx2>=0.0.1",  # Starlette 1.3 TestClient prefers httpx2 over the deprecated httpx path
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.uv]
+# Run on the interpreter already present on this machine (Python 3.14).
+# requires-python stays >=3.12 so the project remains spec-compatible.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

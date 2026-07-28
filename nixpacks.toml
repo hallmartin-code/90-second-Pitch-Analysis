@@ -1,0 +1,14 @@
+# Railway / Nixpacks build configuration.
+#
+# Pins Python 3.12 (the spec's target; Nixpacks may not offer 3.14 yet) and installs
+# dependencies with uv. No Dockerfile — the spec forbids Docker. Prod install omits the
+# dev extras (pytest, httpx2, etc.).
+
+[phases.setup]
+nixPkgs = ["python312", "uv"]
+
+[phases.install]
+cmds = ["uv sync --no-dev"]
+
+[start]
+cmd = "uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT"
