@@ -32,8 +32,8 @@ uv sync --extra dev
 
 # 2. Configure
 cp .env.example .env
-# For now FAKE_LLM=1 lets you run the whole flow without an API key.
-# For live evaluation, set ANTHROPIC_API_KEY and FAKE_LLM=0.
+# Set ANTHROPIC_API_KEY for real evaluation (the default).
+# No key handy? Set FAKE_LLM=1 to run the whole flow on a canned payload.
 
 # 3. Run
 uv run uvicorn app.main:app --reload
@@ -55,9 +55,9 @@ The app is built for [Railway](https://railway.app) (Nixpacks, no Docker).
    `/healthz` health check; `nixpacks.toml` pins Python 3.12 and installs with `uv`. If the
    build picks the wrong Python, set `NIXPACKS_PYTHON_VERSION=3.12` in the Variables tab.
 2. **Set variables** (Variables tab — never commit these):
-   - `ANTHROPIC_API_KEY` — your key.
-   - `FAKE_LLM=0` — turn on real evaluation.
+   - `ANTHROPIC_API_KEY` — your key. (Real evaluation is the default; no `FAKE_LLM` needed.)
    - `ANTHROPIC_MODEL=claude-sonnet-5` (optional; this is the default).
+   - `FAKE_LLM=1` — only if you want to run without spending tokens.
 3. **Add a Volume** so reports and job history survive redeploys (the container filesystem is
    otherwise ephemeral). Mount it at `/data`, then set:
    - `STORAGE_DIR=/data/storage`
@@ -72,9 +72,9 @@ evaluation, handled by an in-process background task (no Celery/Redis).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required for live evaluation; unused when `FAKE_LLM=1`. |
+| `ANTHROPIC_API_KEY` | — | Required for real evaluation (the default); unused when `FAKE_LLM=1`. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Vision-capable model for both stages. |
-| `FAKE_LLM` | `1` | Return a canned valid payload instead of calling the API. |
+| `FAKE_LLM` | `0` | Set to `1` to return a canned valid payload instead of calling the API. |
 | `LLM_TIMEOUT_SECONDS` | `120` | Per-call timeout. |
 | `MAX_UPLOAD_MB` | `30` | Reject larger uploads. |
 | `MAX_PAGES` | `40` | Reject longer decks (cost guardrail). |

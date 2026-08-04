@@ -14,7 +14,9 @@ class Settings(BaseSettings):
     """Typed configuration. Values come from the environment or `.env`."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Absolute path so .env loads no matter what directory the server starts from —
+        # otherwise a wrong cwd silently falls back to defaults (FAKE_LLM=1).
+        env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,  # allow Settings(fake_llm=...) in tests, not just FAKE_LLM
@@ -23,7 +25,7 @@ class Settings(BaseSettings):
     # LLM
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field(default="claude-sonnet-5", alias="ANTHROPIC_MODEL")
-    fake_llm: bool = Field(default=True, alias="FAKE_LLM")
+    fake_llm: bool = Field(default=False, alias="FAKE_LLM")  # real evaluation by default
     llm_timeout_seconds: float = Field(default=120.0, alias="LLM_TIMEOUT_SECONDS")
 
     # Ingestion guardrails
