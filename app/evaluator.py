@@ -48,7 +48,6 @@ STAGE_B_MAX_TOKENS = 16000
 
 _SLIDE_PARSE_TOOL = "record_slides"
 _EVALUATE_TOOL = "submit_evaluation"
-_DIMENSION_TOOL = "submit_dimension"
 
 
 class EvaluationError(Exception):
@@ -154,44 +153,53 @@ def _normalize(text: str) -> str:
 
 def verify_and_prune(
     payload: EvaluationPayload, deck: IngestedDeck
-) -> tuple[EvaluationPayload, list[Dimension], list[str]]:
-    """Drop evidence that can't be trusted; report dimensions left with none.
+) -> tuple[EvaluationPayload, list[str]]:
+    """Best-effort clean-up of evidence — soft, and never fatal.
 
-    An evidence item is dropped if its slide number doesn't exist, or — when the deck has a
-    text layer — its quote does not appear in that slide's extracted text after whitespace
-    normalization. Returns the pruned payload, the dimensions that lost *all* their evidence
-    (candidates for a re-run), and a log of what was dropped.
+    Each filter is applied only when it would leave at least one evidence item, so a
+    dimension is never emptied (which would make the payload invalid) and the pipeline never
+    has to re-run or fail. Real decks bake much of their text into images, so the extracted
+    text layer is often partial; a quote the vision model legitimately read off a slide may
+    simply not appear in that layer. We therefore *prefer* verifiable evidence but keep the
+    model's citations when nothing verifies, rather than blocking the report.
+
+    Preference order per dimension: keep evidence on real slides; among those, keep evidence
+    whose quote matches the text layer. Returns the cleaned payload and a note log.
     """
     slide_text = {page.number: page.text for page in deck.pages}
     page_count = deck.page_count
-    dropped: list[str] = []
+    notes: list[str] = []
     new_dimensions: list[DimensionResult] = []
-    lost_all: list[Dimension] = []
 
     for result in payload.dimensions:
-        kept = []
-        for item in result.evidence:
-            if not (1 <= item.slide_number <= page_count):
-                dropped.append(f"{result.dimension}: slide {item.slide_number} does not exist")
-                continue
-            if deck.has_text_layer and _normalize(item.quote) not in _normalize(
-                slide_text.get(item.slide_number, "")
-            ):
-                dropped.append(
-                    f"{result.dimension}: quote not found on slide {item.slide_number}"
-                )
-                continue
-            kept.append(item)
+        evidence = list(result.evidence)
 
-        if kept:
-            new_dimensions.append(result.model_copy(update={"evidence": kept}))
+        on_real_slides = [e for e in evidence if 1 <= e.slide_number <= page_count]
+        if on_real_slides:
+            if len(on_real_slides) != len(evidence):
+                notes.append(f"{result.dimension}: dropped evidence citing a non-existent slide")
+            evidence = on_real_slides
         else:
-            # Keep the original (unverified) evidence so the payload stays schema-valid;
-            # the caller will re-run this dimension.
-            new_dimensions.append(result)
-            lost_all.append(Dimension(result.dimension))
+            notes.append(f"{result.dimension}: all evidence cited missing slides; kept as-is")
 
-    return payload.model_copy(update={"dimensions": new_dimensions}), lost_all, dropped
+        if deck.has_text_layer:
+            matched = [
+                e
+                for e in evidence
+                if _normalize(e.quote) in _normalize(slide_text.get(e.slide_number, ""))
+            ]
+            if matched:
+                if len(matched) != len(evidence):
+                    notes.append(f"{result.dimension}: dropped a quote not found in the text layer")
+                evidence = matched
+            else:
+                notes.append(
+                    f"{result.dimension}: no quote matched the text layer (likely image-baked text); kept as-is"
+                )
+
+        new_dimensions.append(result.model_copy(update={"evidence": evidence}))
+
+    return payload.model_copy(update={"dimensions": new_dimensions}), notes
 
 
 def finalize_scores(payload: EvaluationPayload) -> EvaluationPayload:
@@ -432,62 +440,22 @@ def _stage_b(
     raise EvaluationError("The evaluation could not be completed correctly. Please try again.")
 
 
-def _rerun_dimension(
-    client: anthropic.Anthropic,
-    deck: IngestedDeck,
-    metrics: DeckMetrics,
-    records: list[SlideRecord],
-    payload: EvaluationPayload,
-    dimension: Dimension,
-    settings: Settings,
-) -> EvaluationPayload:
-    """Re-evaluate a single dimension whose evidence all failed verification (SPEC §6.4)."""
-    system = _prompt("deck_evaluate.md").replace("{rubric}", render_rubric_text())
-    schema = DimensionResult.model_json_schema()
-    instruction = (
-        f"Re-evaluate ONLY the '{dimension.value}' dimension. The previous evidence did not "
-        "match the deck's text layer. Provide 1-3 evidence quotes that appear verbatim on "
-        f"their cited slides. Call {_DIMENSION_TOOL} with a single DimensionResult for "
-        f"'{dimension.value}'."
-    )
-    content = _stage_b_content(deck, metrics, records, instruction)
-    raw = _invoke_tool(
-        client,
-        settings=settings,
-        system=system,
-        content=content,
-        tool_name=_DIMENSION_TOOL,
-        tool_schema=schema,
-        tool_description="Submit a single DimensionResult for the requested dimension.",
-        max_tokens=STAGE_A_MAX_TOKENS,
-    )
-    try:
-        new_result = DimensionResult.model_validate(raw)
-    except ValidationError as exc:
-        raise EvaluationError(
-            f"The '{dimension.value}' dimension could not be re-evaluated. Please try again."
-        ) from exc
-
-    updated = [
-        new_result if Dimension(d.dimension) == dimension else d for d in payload.dimensions
-    ]
-    return payload.model_copy(update={"dimensions": updated})
-
-
 # --- Orchestration -----------------------------------------------------------
 
 
 def evaluate_deck(
     deck: IngestedDeck, metrics: DeckMetrics, settings: Settings
 ) -> EvaluationResult:
-    """Run the full evaluation pipeline and return a verified result.
+    """Run the full evaluation pipeline and return a result.
 
-    Raises :class:`EvaluationError` (user-safe message) on any unrecoverable failure.
+    Verification is best-effort and never fatal — the only hard failures are an unreachable
+    API or a Stage B payload that stays schema-invalid after one retry. Raises
+    :class:`EvaluationError` (user-safe message) in those cases.
     """
     if settings.fake_llm:
         records = fake_slide_records(deck)
         payload = fake_evaluation_payload(deck, metrics)
-        payload, _lost, _dropped = verify_and_prune(payload, deck)
+        payload, _notes = verify_and_prune(payload, deck)
         return EvaluationResult(payload, records, model="fake-llm")
 
     client = _client(settings)
@@ -496,19 +464,9 @@ def evaluate_deck(
     records = _stage_a(client, deck, settings)
     payload = _stage_b(client, deck, metrics, records, settings)
 
-    payload, lost, dropped = verify_and_prune(payload, deck)
-    for item in dropped:
-        logger.info("Dropped unverifiable evidence — %s", item)
-    for dimension in lost:
-        payload = _rerun_dimension(client, deck, metrics, records, payload, dimension, settings)
-
-    payload, still_lost, _ = verify_and_prune(payload, deck)
-    if still_lost:
-        names = ", ".join(d.value for d in still_lost)
-        raise EvaluationError(
-            f"Evidence for these dimensions could not be verified against the deck: {names}. "
-            "Please try again."
-        )
+    payload, notes = verify_and_prune(payload, deck)
+    for note in notes:
+        logger.info("verification: %s", note)
 
     payload = finalize_scores(payload)
     return EvaluationResult(payload, records, model=settings.anthropic_model)

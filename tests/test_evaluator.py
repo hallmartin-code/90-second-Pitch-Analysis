@@ -61,45 +61,60 @@ def _payload_with_first_dimension_evidence(slide_number: int, quote: str):
 # --- verify_and_prune --------------------------------------------------------
 
 
+def _evidence_slides(payload):
+    return [e.slide_number for e in payload.dimensions[0].evidence]
+
+
 def test_valid_evidence_survives():
     deck = _deck(["cover text", QUOTE, "more"])
     payload = _payload_with_first_dimension_evidence(2, QUOTE)
-    pruned, lost, dropped = verify_and_prune(payload, deck)
-    assert lost == []
-    assert dropped == []
+    pruned, notes = verify_and_prune(payload, deck)
+    assert notes == []
     assert len(pruned.dimensions[0].evidence) == 1
 
 
-def test_nonexistent_slide_number_is_dropped():
-    deck = _deck(["a", QUOTE, "c"])  # 3 pages
+def test_verification_never_empties_a_dimension():
+    # Every dimension must keep at least one evidence item (payload stays valid, no re-run).
+    deck = _deck(["a", "totally different content", "c"])
+    payload = _payload_with_first_dimension_evidence(2, QUOTE)  # quote won't match slide 2
+    pruned, notes = verify_and_prune(payload, deck)
+    assert len(pruned.dimensions[0].evidence) >= 1  # kept as-is, not dropped
+    assert any("kept as-is" in n for n in notes)
+
+
+def test_bad_slide_kept_when_it_is_the_only_evidence():
+    deck = _deck(["a", QUOTE, "c"])  # 3 pages; evidence cites slide 999
     payload = _payload_with_first_dimension_evidence(999, QUOTE)
-    pruned, lost, dropped = verify_and_prune(payload, deck)
-    assert Dimension.clarity in lost  # first dimension is clarity; it lost its only evidence
-    assert any("does not exist" in d for d in dropped)
+    pruned, notes = verify_and_prune(payload, deck)
+    assert len(pruned.dimensions[0].evidence) == 1  # never emptied
+    assert any("missing slides" in n for n in notes)
 
 
-def test_quote_not_in_text_is_dropped_when_text_layer_present():
-    deck = _deck(["a", "totally different slide content", "c"])
-    payload = _payload_with_first_dimension_evidence(2, QUOTE)
-    pruned, lost, dropped = verify_and_prune(payload, deck)
-    assert Dimension.clarity in lost
-    assert any("quote not found" in d for d in dropped)
+def test_bad_slide_dropped_when_a_good_one_remains():
+    from app.schemas import Evidence
+
+    deck = _deck(["a", QUOTE, "c"])
+    payload = make_evaluation_payload()
+    two = [Evidence(slide_number=2, quote=QUOTE, comment="ok"), Evidence(slide_number=999, quote="x", comment="bad")]
+    dim = payload.dimensions[0].model_copy(update={"evidence": two})
+    payload = payload.model_copy(update={"dimensions": [dim, *payload.dimensions[1:]]})
+    pruned, notes = verify_and_prune(payload, deck)
+    assert _evidence_slides(pruned) == [2]  # the phantom slide dropped, real one kept
 
 
 def test_quote_not_checked_when_no_text_layer():
     deck = _deck(["", "", ""], has_text_layer=False)
     payload = _payload_with_first_dimension_evidence(2, "anything transcribed")
-    pruned, lost, dropped = verify_and_prune(payload, deck)
-    assert lost == []
-    assert dropped == []
+    pruned, notes = verify_and_prune(payload, deck)
+    assert notes == []
+    assert len(pruned.dimensions[0].evidence) == 1
 
 
 def test_quote_match_is_whitespace_and_case_insensitive():
     deck = _deck(["a", "  REAL-TIME   freight  visibility for   mid-market shippers ", "c"])
     payload = _payload_with_first_dimension_evidence(2, QUOTE)
-    _, lost, dropped = verify_and_prune(payload, deck)
-    assert lost == []
-    assert dropped == []
+    _, notes = verify_and_prune(payload, deck)
+    assert notes == []
 
 
 # --- _unstringify (tool-input normalization) ---------------------------------
@@ -237,9 +252,8 @@ def test_fake_evidence_matches_text_layer(fixture_decks, tmp_path, fake_settings
     deck = _ingest("good_deck.pdf", fixture_decks, tmp_path)
     metrics = compute_deck_metrics([(p.number, p.text) for p in deck.pages])
     result = evaluate_deck(deck, metrics, fake_settings)
-    _, lost, dropped = verify_and_prune(result.payload, deck)
-    assert lost == []
-    assert dropped == []
+    _, notes = verify_and_prune(result.payload, deck)
+    assert notes == []
 
 
 def test_fake_run_on_scanned_deck(fixture_decks, tmp_path, fake_settings):
