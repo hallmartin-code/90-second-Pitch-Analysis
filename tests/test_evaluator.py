@@ -13,11 +13,13 @@ from app.metrics import compute_deck_metrics
 from app.rubric import Dimension, aggregate_overall
 from app.evaluator import (
     EvaluationResult,
+    _coerce_slide_record,
     _unstringify,
     evaluate_deck,
     finalize_scores,
     verify_and_prune,
 )
+from app.rubric import SlideType, TextDensity
 from app.schemas import Evidence
 from tests.factories import make_evaluation_payload
 
@@ -121,6 +123,64 @@ def test_unstringify_handles_double_wrapped_object():
 
 def test_unstringify_leaves_plain_strings_alone():
     assert _unstringify({"headline": "We help X do Y"}) == {"headline": "We help X do Y"}
+
+
+# --- _coerce_slide_record (Stage A resilience) -------------------------------
+
+
+def test_coerce_repairs_out_of_enum_slide_type():
+    rec = _coerce_slide_record(
+        {"slide_number": 3, "slide_type": "roadmap", "text_density": "balanced"}, 3, 15
+    )
+    assert rec.slide_type is SlideType.unclear
+    assert rec.slide_number == 3
+
+
+def test_coerce_repairs_bad_text_density():
+    rec = _coerce_slide_record({"slide_type": "team", "text_density": "medium"}, 5, 15)
+    assert rec.text_density is TextDensity.balanced
+
+
+def test_coerce_truncates_too_many_key_points():
+    rec = _coerce_slide_record(
+        {"slide_type": "market", "key_points": [f"p{i}" for i in range(9)]}, 6, 15
+    )
+    assert len(rec.key_points) == 5
+
+
+def test_coerce_handles_string_key_points_and_missing_fields():
+    rec = _coerce_slide_record({"slide_type": "ask"}, 15, 15)  # minimal input
+    assert rec.slide_number == 15
+    assert rec.key_points == []
+    assert rec.has_chart is False
+    assert rec.headline == "Slide 15"
+
+
+def test_coerce_falls_back_on_invalid_slide_number():
+    rec = _coerce_slide_record({"slide_number": 999, "slide_type": "cover"}, 1, 15)
+    assert rec.slide_number == 1  # 999 is out of range -> use expected
+
+
+def test_coerce_produces_valid_slide_record():
+    # A fully valid, if messy, dict round-trips without raising.
+    rec = _coerce_slide_record(
+        {
+            "slide_number": 2,
+            "slide_type": "traction",
+            "headline": "Revenue Growth",
+            "key_points": ["$800K to $39M", None, "40%+ margin"],
+            "has_chart": 1,
+            "has_screenshot": 0,
+            "text_density": "dense",
+            "readability_notes": "small font",
+        },
+        2,
+        15,
+    )
+    assert rec.slide_type is SlideType.traction
+    assert rec.has_chart is True and rec.has_screenshot is False
+    assert rec.key_points == ["$800K to $39M", "40%+ margin"]  # None dropped
+    assert rec.readability_notes == ["small font"]
 
 
 # --- finalize_scores ---------------------------------------------------------

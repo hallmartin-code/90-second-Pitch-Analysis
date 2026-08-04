@@ -104,6 +104,50 @@ def _unstringify(value: object) -> object:
 # --- Verification (pure Python, no LLM) --------------------------------------
 
 
+def _coerce_slide_record(raw: dict, expected_number: int, page_count: int) -> SlideRecord:
+    """Best-effort build a valid SlideRecord from a model-returned dict.
+
+    Stage A is descriptive, not evaluative — so a record with an out-of-enum ``slide_type``,
+    an odd ``text_density``, too many ``key_points``, or a missing field should be repaired,
+    never allowed to fail the whole deck.
+    """
+
+    def _slide_type(value: object) -> SlideType:
+        try:
+            return SlideType(value)
+        except (ValueError, KeyError):
+            return SlideType.unclear
+
+    def _density(value: object) -> TextDensity:
+        try:
+            return TextDensity(value)
+        except (ValueError, KeyError):
+            return TextDensity.balanced
+
+    def _str_list(value: object, limit: int) -> list[str]:
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item is not None][:limit]
+
+    number = raw.get("slide_number")
+    if not (isinstance(number, int) and 1 <= number <= page_count):
+        number = expected_number
+    headline = str(raw.get("headline") or f"Slide {number}")
+
+    return SlideRecord(
+        slide_number=number,
+        slide_type=_slide_type(raw.get("slide_type")),
+        headline=headline,
+        key_points=_str_list(raw.get("key_points"), 5),
+        has_chart=bool(raw.get("has_chart")),
+        has_screenshot=bool(raw.get("has_screenshot")),
+        text_density=_density(raw.get("text_density")),
+        readability_notes=_str_list(raw.get("readability_notes"), 10),
+    )
+
+
 def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
@@ -266,14 +310,16 @@ def _stage_a(client: anthropic.Anthropic, deck: IngestedDeck, settings: Settings
         slides = raw.get("slides", raw) if isinstance(raw, dict) else raw
         if isinstance(slides, dict) and "slides" in slides:
             slides = slides["slides"]
-        try:
-            parsed = _SlideBatch.model_validate({"slides": slides})
-        except ValidationError as exc:
-            logger.warning("Stage A returned an invalid batch: %s", exc)
-            raise EvaluationError("The deck could not be parsed. Please try again.") from exc
-        for record in parsed.slides:
-            if 1 <= record.slide_number <= deck.page_count:
-                by_number[record.slide_number] = record
+        if not isinstance(slides, list):
+            logger.warning("Stage A batch was not a list; skipping (got %s)", type(slides).__name__)
+            slides = []
+        # Coerce each record individually — one malformed record must not fail the deck.
+        for index, item in enumerate(slides):
+            if not isinstance(item, dict):
+                continue
+            expected = batch[index].number if index < len(batch) else batch[-1].number
+            record = _coerce_slide_record(item, expected, deck.page_count)
+            by_number[record.slide_number] = record
 
     # Fill any slide the model skipped with a minimal 'unclear' record so downstream code
     # always has one record per page.
