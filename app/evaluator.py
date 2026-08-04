@@ -16,6 +16,7 @@ with adaptive thinking).
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
@@ -76,6 +77,28 @@ class _SlideBatch(BaseModel):
 @lru_cache(maxsize=8)
 def _prompt(name: str) -> str:
     return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
+def _unstringify(value: object) -> object:
+    """Recursively parse JSON-encoded string values back into objects/lists.
+
+    Models sometimes return a tool argument with a nested object or list encoded as a JSON
+    string (more common when the tool schema uses ``$ref``/``$defs``). This normalizes such
+    values so Pydantic validation sees the real structure.
+    """
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped[:1] in "[{":
+            try:
+                return _unstringify(json.loads(stripped))
+            except (ValueError, TypeError):
+                return value
+        return value
+    if isinstance(value, list):
+        return [_unstringify(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _unstringify(item) for key, item in value.items()}
+    return value
 
 
 # --- Verification (pure Python, no LLM) --------------------------------------
@@ -197,7 +220,8 @@ def _invoke_tool(
 
     for block in response.content:
         if block.type == "tool_use" and block.name == tool_name:
-            return dict(block.input)
+            normalized = _unstringify(dict(block.input))
+            return normalized if isinstance(normalized, dict) else {}
     raise EvaluationError("The evaluator did not return a structured result.")
 
 
@@ -237,8 +261,13 @@ def _stage_a(client: anthropic.Anthropic, deck: IngestedDeck, settings: Settings
             tool_description="Record one descriptive SlideRecord per slide in the batch.",
             max_tokens=STAGE_A_MAX_TOKENS,
         )
+        # Unwrap common shapes: {"slides": [...]}, a bare [...], or a double-wrapped
+        # {"slides": {"slides": [...]}} that some models emit.
+        slides = raw.get("slides", raw) if isinstance(raw, dict) else raw
+        if isinstance(slides, dict) and "slides" in slides:
+            slides = slides["slides"]
         try:
-            parsed = _SlideBatch.model_validate(raw)
+            parsed = _SlideBatch.model_validate({"slides": slides})
         except ValidationError as exc:
             logger.warning("Stage A returned an invalid batch: %s", exc)
             raise EvaluationError("The deck could not be parsed. Please try again.") from exc

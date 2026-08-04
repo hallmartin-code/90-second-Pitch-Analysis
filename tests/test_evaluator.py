@@ -13,6 +13,7 @@ from app.metrics import compute_deck_metrics
 from app.rubric import Dimension, aggregate_overall
 from app.evaluator import (
     EvaluationResult,
+    _unstringify,
     evaluate_deck,
     finalize_scores,
     verify_and_prune,
@@ -97,6 +98,29 @@ def test_quote_match_is_whitespace_and_case_insensitive():
     _, lost, dropped = verify_and_prune(payload, deck)
     assert lost == []
     assert dropped == []
+
+
+# --- _unstringify (tool-input normalization) ---------------------------------
+
+
+def test_unstringify_passes_through_normal_structures():
+    value = {"slides": [{"slide_number": 1}], "n": 3, "flag": True}
+    assert _unstringify(value) == value
+
+
+def test_unstringify_parses_json_encoded_list():
+    raw = {"slides": '[{"slide_number": 1}, {"slide_number": 2}]'}
+    assert _unstringify(raw) == {"slides": [{"slide_number": 1}, {"slide_number": 2}]}
+
+
+def test_unstringify_handles_double_wrapped_object():
+    # The model quirk observed live: the whole object encoded as a string under "slides".
+    raw = {"slides": '{"slides": [{"slide_number": 1}]}'}
+    assert _unstringify(raw) == {"slides": {"slides": [{"slide_number": 1}]}}
+
+
+def test_unstringify_leaves_plain_strings_alone():
+    assert _unstringify({"headline": "We help X do Y"}) == {"headline": "We help X do Y"}
 
 
 # --- finalize_scores ---------------------------------------------------------
