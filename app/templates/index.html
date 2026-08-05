@@ -1,52 +1,50 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="text-center">
-  <h1 class="font-serif text-4xl font-semibold text-stone-900">
-    Does your deck land in 30&nbsp;seconds?
-  </h1>
-  <p class="mt-4 text-lg text-stone-600">
-    Upload your pitch deck as a PDF. Get back a scored report — Clarity, Structure,
-    Messaging, Differentiation, Investor Engagement — with every judgment tied to a
-    specific slide, and rewrites you can use verbatim.
+<form
+  class="card"
+  hx-post="/api/decks"
+  hx-encoding="multipart/form-data"
+  hx-target="#result"
+  hx-swap="innerHTML"
+  hx-disabled-elt="find button"
+>
+  <div class="eyebrow">Deck Analyzer</div>
+  <h1>Pitch Deck<span class="arrow">&rarr;</span><span class="to">90&#8209;Second Analysis</span></h1>
+  <p class="lede">
+    Upload a pitch deck and get a partner-grade strategic-narrative analysis PDF — scored
+    against Andy Raskin's five-element framework by Claude.
   </p>
-</section>
 
-<section class="mt-10 rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
-  <form
-    hx-post="/api/decks"
-    hx-encoding="multipart/form-data"
-    hx-target="#result"
-    hx-swap="innerHTML"
-    hx-disabled-elt="find button"
-    class="flex flex-col items-center gap-4"
-  >
-    <label class="w-full cursor-pointer rounded-xl border-2 border-dashed border-stone-300 bg-stone-50 px-6 py-10 text-center hover:border-accent">
-      <span class="block text-base font-medium text-stone-700">Choose your pitch deck PDF</span>
-      <span class="mt-1 block text-sm text-stone-400">
-        Up to {{ max_pages }} pages, {{ max_upload_mb }}&nbsp;MB
-      </span>
-      <input
-        type="file"
-        name="file"
-        accept="application/pdf,.pdf"
-        required
-        class="mt-4 block w-full text-sm text-stone-600 file:mr-4 file:rounded-lg file:border-0 file:bg-accent file:px-4 file:py-2 file:text-white"
-      />
-    </label>
-    <button
-      type="submit"
-      class="rounded-lg bg-accent px-6 py-2.5 font-medium text-white hover:opacity-90 disabled:opacity-50"
-    >
-      Evaluate my deck
-    </button>
-  </form>
+  <label class="dropzone" for="deck-upload">
+    <div class="dropzone-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--ink-100)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
+        <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/>
+      </svg>
+    </div>
+    <div class="dropzone-title" id="dz-title">Click to choose a deck</div>
+    <div class="dropzone-sub"><b>.pdf</b> &nbsp;&middot;&nbsp; up to {{ max_pages }} pages, {{ max_upload_mb }}&nbsp;MB</div>
+    <input class="file-input" type="file" id="deck-upload" name="file" accept="application/pdf,.pdf" required />
+  </label>
 
-  <div id="result" class="mt-6"></div>
+  <button class="cta" type="submit">Generate analysis PDF</button>
 
-  <p class="mt-4 text-center text-xs text-stone-400">
-    Your deck is read with vision, then scored by an AI partner against a fixed rubric.
-    Evaluation takes 30–90&nbsp;seconds.
-  </p>
-</section>
+  <div id="result"></div>
+
+  <div class="disclosure">
+    Every page is read with Claude's vision API and scored on the Raskin framework, then a
+    downloadable PDF report is generated. Evaluation takes 30&ndash;90&nbsp;seconds.
+  </div>
+</form>
+
+<script>
+  document.addEventListener("change", function (e) {
+    if (e.target && e.target.id === "deck-upload") {
+      var file = e.target.files && e.target.files[0];
+      var title = document.getElementById("dz-title");
+      if (file && title) title.textContent = file.name;
+    }
+  });
+</script>
 {% endblock %}
