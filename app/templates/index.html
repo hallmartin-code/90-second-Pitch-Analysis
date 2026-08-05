@@ -1,14 +1,7 @@
 {% extends "base.html" %}
 
 {% block content %}
-<form
-  class="card"
-  hx-post="/api/decks"
-  hx-encoding="multipart/form-data"
-  hx-target="#result"
-  hx-swap="innerHTML"
-  hx-disabled-elt="find button"
->
+<form class="card" id="upload-form">
   <div class="eyebrow">Deck Analyzer</div>
   <h1>Pitch Deck<span class="arrow">&rarr;</span><span class="to">90&#8209;Second Analysis</span></h1>
   <p class="lede">
@@ -28,23 +21,91 @@
     <input class="file-input" type="file" id="deck-upload" name="file" accept="application/pdf,.pdf" required />
   </label>
 
-  <button class="cta" type="submit">Generate analysis PDF</button>
+  <button class="cta" type="submit" id="submit-btn">Generate analysis PDF</button>
 
   <div id="result"></div>
 
   <div class="disclosure">
     Every page is read with Claude's vision API and scored on the Raskin framework, then a
-    downloadable PDF report is generated. Evaluation takes 30&ndash;90&nbsp;seconds.
+    downloadable PDF report is generated. Evaluation takes 60&ndash;120&nbsp;seconds.
   </div>
 </form>
 
 <script>
-  document.addEventListener("change", function (e) {
-    if (e.target && e.target.id === "deck-upload") {
-      var file = e.target.files && e.target.files[0];
-      var title = document.getElementById("dz-title");
-      if (file && title) title.textContent = file.name;
+  (function () {
+    var form = document.getElementById("upload-form");
+    var input = document.getElementById("deck-upload");
+    var result = document.getElementById("result");
+    var btn = document.getElementById("submit-btn");
+    var dzTitle = document.getElementById("dz-title");
+
+    input.addEventListener("change", function () {
+      var f = input.files && input.files[0];
+      if (f && dzTitle) dzTitle.textContent = f.name;
+    });
+
+    function panel(label, extra) {
+      return (
+        '<div class="panel"><div class="row"><div class="spinner"></div>' +
+        '<div class="stage-label">' + label + "</div></div>" +
+        (extra ? '<div class="muted">' + extra + "</div>" : "") +
+        "</div>"
+      );
     }
-  });
+    function errorPanel(msg) {
+      return (
+        '<div class="panel"><div class="stage-label">' + msg + "</div>" +
+        '<div style="margin-top:16px;"><a class="btn-ghost" href="/">Try again</a></div></div>'
+      );
+    }
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (!input.files || !input.files.length) return;
+      btn.disabled = true;
+      result.innerHTML = panel("Uploading…");
+
+      var data = new FormData();
+      data.append("file", input.files[0]);
+
+      fetch("/api/decks", { method: "POST", body: data })
+        .then(function (resp) {
+          var jobId = resp.headers.get("X-Job-Id");
+          var deckId = resp.headers.get("X-Deck-Id");
+          if (!jobId) {
+            // Validation error — the server returned an error partial (HTML).
+            return resp.text().then(function (html) {
+              result.innerHTML = html || errorPanel("That upload was rejected. Please try again.");
+              btn.disabled = false;
+            });
+          }
+          result.innerHTML = panel("Queued…");
+          var poll = setInterval(function () {
+            fetch("/api/jobs/" + jobId, { cache: "no-store" })
+              .then(function (r) { return r.json(); })
+              .then(function (s) {
+                if (s.status === "done") {
+                  clearInterval(poll);
+                  window.location.href = "/report/" + deckId;
+                } else if (s.status === "failed") {
+                  clearInterval(poll);
+                  result.innerHTML = errorPanel(s.error || "The evaluation failed. Please try again.");
+                  btn.disabled = false;
+                } else {
+                  result.innerHTML = panel(
+                    s.label || "Working…",
+                    s.page_total ? s.page_total + " slides · reading with vision" : ""
+                  );
+                }
+              })
+              .catch(function () { /* transient network blip — keep polling */ });
+          }, 2000);
+        })
+        .catch(function () {
+          result.innerHTML = errorPanel("Upload failed. Please check your connection and try again.");
+          btn.disabled = false;
+        });
+    });
+  })();
 </script>
 {% endblock %}

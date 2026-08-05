@@ -48,7 +48,9 @@ def test_healthz(client):
 def test_index_serves_upload_form(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert 'hx-post="/api/decks"' in response.text
+    assert 'id="upload-form"' in response.text
+    assert "/api/decks" in response.text  # the JS posts here
+    assert "/api/jobs/" in response.text  # the JS polls here
 
 
 def test_upload_evaluate_and_download(client, fixture_decks):
