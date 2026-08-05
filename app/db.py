@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import get_settings
@@ -15,6 +16,20 @@ from app.config import get_settings
 _url = get_settings().database_url
 _connect_args = {"check_same_thread": False} if _url.startswith("sqlite") else {}
 engine = create_engine(_url, connect_args=_connect_args)
+
+
+if _url.startswith("sqlite"):
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _record) -> None:
+        """Enable WAL + a busy timeout so the polling reads and the background writer
+        don't collide with 'database is locked'. WAL lets readers run during a write; the
+        busy timeout makes a contended write wait instead of erroring."""
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=8000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 
 def _ensure_sqlite_dir(url: str) -> None:
