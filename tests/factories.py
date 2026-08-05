@@ -1,76 +1,46 @@
-"""Builders for valid schema objects, reused across schema, report, and route tests.
-
-A single source of a known-good ``EvaluationPayload`` keeps the tests honest: every test
-starts from something valid and mutates one thing to prove a constraint bites.
-"""
+"""Builders for valid schema objects, reused across schema, report, and route tests."""
 
 from __future__ import annotations
 
-from app.rubric import Dimension, RewriteLabel, SlideType, SlideVerdict, TextDensity
+from app.rubric import (
+    RASKIN_ELEMENTS,
+    RaskinElement,
+    SlideType,
+    TextDensity,
+    aggregate_overall,
+)
 from app.schemas import (
-    DimensionResult,
-    Evidence,
+    ElementResult,
     EvaluationPayload,
-    Rewrite,
-    SlideNote,
+    ObstacleGift,
+    RebuildSlide,
     SlideRecord,
 )
 
-_DIMENSION_BLURB = {
-    Dimension.clarity: "The cover names the customer and the job in one sentence.",
-    Dimension.structure: "All load-bearing beats are present and in order.",
-    Dimension.messaging: "One sharp claim, backed by a concrete traction number.",
-    Dimension.differentiation: "Names the status-quo alternative and a hard-to-copy wedge.",
-    Dimension.investor_engagement: "The ask is specific: amount, use of funds, milestone.",
+_SCORES: dict[RaskinElement, float] = {
+    RaskinElement.name_the_enemy: 7.5,
+    RaskinElement.why_now: 6.5,
+    RaskinElement.promised_land: 8.5,
+    RaskinElement.obstacles_and_gifts: 8.0,
+    RaskinElement.present_evidence: 8.5,
 }
 
 
-def make_dimension_result(dimension: Dimension, score: int = 4) -> DimensionResult:
-    return DimensionResult(
-        dimension=dimension,
-        score=score,
-        anchor_rationale=f"Matches the high anchor: {_DIMENSION_BLURB[dimension]}",
-        evidence=[
-            Evidence(
-                slide_number=2,
-                quote="Real-time freight visibility for mid-market shippers",
-                comment="States who it's for and what it does on the cover.",
-            )
-        ],
-        fixes=[
-            "Move the traction number onto slide 2.",
-            "Cut the jargon in the subhead.",
-        ],
-    )
-
-
-def make_slide_record(slide_number: int = 1) -> SlideRecord:
-    return SlideRecord(
-        slide_number=slide_number,
-        slide_type=SlideType.cover,
-        headline="Northwind Logistics",
-        key_points=["Real-time freight visibility for mid-market shippers"],
-        has_chart=False,
-        has_screenshot=False,
-        text_density=TextDensity.sparse,
-        readability_notes=[],
+def make_element_result(element: RaskinElement, score: float | None = None) -> ElementResult:
+    return ElementResult(
+        element=element,
+        score=_SCORES[element] if score is None else score,
+        summary=f"{element.value.replace('_', ' ').title()} — solid but sharpen the framing.",
+        evaluation=f"The deck addresses {element.value.replace('_', ' ')} but could lead with it earlier.",
+        recommendation=f"Strengthen {element.value.replace('_', ' ')} with one concrete, specific claim.",
     )
 
 
 def make_slide_records() -> list[SlideRecord]:
-    """Eleven records mirroring the good-deck fixture, for the slide-by-slide table."""
     types = [
-        SlideType.cover,
-        SlideType.problem,
-        SlideType.why_now,
-        SlideType.solution,
-        SlideType.product,
-        SlideType.market,
-        SlideType.traction,
-        SlideType.business_model,
-        SlideType.competition,
-        SlideType.team,
-        SlideType.ask,
+        SlideType.cover, SlideType.problem, SlideType.why_now, SlideType.solution,
+        SlideType.product, SlideType.market, SlideType.traction, SlideType.business_model,
+        SlideType.competition, SlideType.team, SlideType.ask,
     ]
     return [
         SlideRecord(
@@ -88,40 +58,26 @@ def make_slide_records() -> list[SlideRecord]:
 
 
 def make_evaluation_payload(**overrides: object) -> EvaluationPayload:
-    """Return a fully valid payload. Pass field overrides to construct invalid variants."""
+    """Return a fully valid Raskin payload. Pass overrides to construct invalid variants."""
     data: dict[str, object] = dict(
-        overall_score=72,
-        band="Tighten",
-        headline="Put the one-line 'what it does' on the cover and lead traction earlier.",
-        dimensions=[make_dimension_result(dim) for dim in Dimension],
-        rewrites=[
-            Rewrite(
-                label=RewriteLabel.one_liner,
-                text="Northwind gives mid-market shippers live freight visibility across 200 carriers.",
-                changed_because="Replaces the abstract tagline with the customer and the job.",
-            ),
-            Rewrite(
-                label=RewriteLabel.cover_slide_copy,
-                text="Northwind Logistics — live freight visibility for mid-market shippers.",
-                changed_because="Names the segment on the cover so the 'what' lands immediately.",
-            ),
-            Rewrite(
-                label=RewriteLabel.thirty_second_verbal,
-                text=(
-                    "Mid-market shippers still track freight by phone. Northwind aggregates "
-                    "live status across 200 carriers and alerts them before a delay becomes a "
-                    "missed delivery. We're at $40k MRR, growing 18% a month, raising $2.5M."
-                ),
-                changed_because="Opens on the pain, states the wedge, ends on traction and the ask.",
-            ),
+        company_name="Northwind Logistics",
+        overall_assessment=(
+            "Northwind has the ingredients of a strong pitch — a real problem, a differentiated "
+            "platform, and traction — but reads more like a company overview than a strategic "
+            "narrative built around a single enemy and an explicit why-now."
+        ),
+        overall_score=aggregate_overall(_SCORES),
+        elements=[make_element_result(spec.key) for spec in RASKIN_ELEMENTS],
+        obstacles_and_gifts=[
+            ObstacleGift(obstacle="Fragmented status quo", gift="A unifying platform", assessment="Clear pairing."),
+            ObstacleGift(obstacle="Legacy model doesn't scale", gift="A distributed network", assessment="Strong."),
+            ObstacleGift(obstacle="Decisions lack insight", gift="An intelligence layer", assessment="Underdeveloped."),
         ],
-        slide_notes=[
-            SlideNote(slide_number=1, verdict=SlideVerdict.tighten, note="Strong cover; add the segment."),
-            SlideNote(slide_number=2, verdict=SlideVerdict.keep, note="Problem is concrete."),
-            SlideNote(slide_number=0, verdict=SlideVerdict.missing, note="No dedicated GTM slide."),
+        rebuild_flow=[
+            RebuildSlide(slides="1", label="Opening", line="State the one-line vision."),
+            RebuildSlide(slides="2", label="The Enemy", line="Name one dominant villain."),
+            RebuildSlide(slides="3", label="Why Now", line="State the shift explicitly."),
         ],
-        unsupported_claims=["'Better than everyone else' has no evidence on the slide."],
-        missing_slide_types=[SlideType.gtm],
     )
     data.update(overrides)
     return EvaluationPayload(**data)

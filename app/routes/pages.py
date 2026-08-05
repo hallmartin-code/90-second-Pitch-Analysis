@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.db import engine
 from app.models import STATUS_LABELS, TERMINAL_STATUSES, Deck, Evaluation, Job, JobStatus
-from app.rubric import DIMENSION_BY_KEY, DIMENSIONS, Dimension
+from app.rubric import ELEMENT_BY_KEY, RASKIN_ELEMENTS, RaskinElement
 from app.schemas import EvaluationPayload
 from app.templating import templates
 
@@ -77,11 +77,11 @@ def report_page(request: Request, deck_id: str) -> HTMLResponse:
         )
 
     payload = EvaluationPayload.model_validate_json(evaluation.payload_json)
-    by_dim = {Dimension(d.dimension): d for d in payload.dimensions}
-    dimensions = [
-        {"title": spec.title, "score": by_dim[spec.key].score}
-        for spec in DIMENSIONS
-        if spec.key in by_dim
+    by_key = {RaskinElement(e.element): e for e in payload.elements}
+    elements = [
+        {"title": spec.title, "score": by_key[spec.key].score, "summary": by_key[spec.key].summary}
+        for spec in RASKIN_ELEMENTS
+        if spec.key in by_key
     ]
 
     return templates.TemplateResponse(
@@ -89,12 +89,10 @@ def report_page(request: Request, deck_id: str) -> HTMLResponse:
         "report.html",
         {
             "deck_id": deck_id,
-            "deck_name": deck.original_filename,
+            "company_name": payload.company_name or deck.original_filename,
             "overall": payload.overall_score,
-            "band": payload.band,
-            "headline": payload.headline,
-            "dimensions": dimensions,
-            "rewrites": payload.rewrites,
+            "overall_assessment": payload.overall_assessment,
+            "elements": elements,
             "model": evaluation.model,
         },
     )

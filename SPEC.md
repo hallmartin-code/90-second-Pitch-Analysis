@@ -1,5 +1,17 @@
 # Build Brief: Pitch Deck Evaluator (PDF in → PDF report out)
 
+> ⚠️ **SUPERSEDED (2026-08-05) re: the evaluation framework.** The app was migrated from the
+> 5-dimension investor rubric described below (§7 — Clarity/Structure/Messaging/
+> Differentiation/Investor Engagement, /100 with bands) to **Andy Raskin's strategic-narrative
+> framework** (/10): (1) Name the Enemy, (2) Why Now?, (3) Tease the Promised Land, (4) Three
+> Obstacles and Three Gifts, (5) Present Evidence — overall = mean of the five. The report is
+> now document-style (company logo, Overall Assessment, per-element Score/Evaluation/
+> Recommendation, Obstacles & Gifts table, Summary Scorecard, rebuild flow, TEN Capital
+> footer), and the evidence/quote-verification path was removed in favour of a tolerant
+> schema. The current framework lives in `app/rubric.py` (`RUBRIC_VERSION = "2.0-raskin"`).
+> Everything else in this brief — stack, ingestion, `FAKE_LLM`, web flow, deploy — still
+> holds. See the README for the current description.
+
 > **How to use this file:** work one phase at a time. Do not build all seven phases in a
 > single turn. Confirm the plan for each phase before writing code, and paste real test
 > output at each checkpoint.

@@ -1,9 +1,9 @@
-"""The evaluation rubric as structured, versionable, unit-testable data.
+"""The evaluation framework as structured, versionable, unit-testable data.
 
-Kept out of prompt strings deliberately (SPEC §7.1): the dimensions, weights, score
-anchors, canonical slide types, buzzword list, and band boundaries all live here so they
-can be tested and versioned. Stage B injects this data into its prompt; verification and
-aggregation import the functions below.
+Version 2.0 scores a deck against **Andy Raskin's strategic-narrative framework** — the
+five elements a category-defining pitch is built on — each 0-10. Overall alignment is the
+mean of the five. The Stage A slide-typing vocabulary (``SlideType``, ``TextDensity``) and
+the deterministic buzzword list live here too.
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-RUBRIC_VERSION = "1.0"
+RUBRIC_VERSION = "2.0-raskin"
 
 
-# --- Enumerations shared across schemas and rubric ---------------------------
+# --- Stage A slide vocabulary ------------------------------------------------
 
 
 class SlideType(str, Enum):
@@ -38,149 +38,95 @@ class SlideType(str, Enum):
     unclear = "unclear"
 
 
-class Dimension(str, Enum):
-    """The five scored evaluation dimensions."""
-
-    clarity = "clarity"
-    structure = "structure"
-    messaging = "messaging"
-    differentiation = "differentiation"
-    investor_engagement = "investor_engagement"
-
-
-class RewriteLabel(str, Enum):
-    """The three rewrites the report must deliver."""
-
-    one_liner = "one_liner"
-    cover_slide_copy = "cover_slide_copy"
-    thirty_second_verbal = "thirty_second_verbal"
-
-
-class SlideVerdict(str, Enum):
-    """Per-slide verdict in the slide-by-slide review."""
-
-    keep = "keep"
-    tighten = "tighten"
-    rebuild = "rebuild"
-    cut = "cut"
-    missing = "missing"
-
-
 class TextDensity(str, Enum):
     sparse = "sparse"
     balanced = "balanced"
     dense = "dense"
 
 
-# --- Dimension specifications with score anchors -----------------------------
+# --- The Raskin framework ----------------------------------------------------
+
+
+class RaskinElement(str, Enum):
+    """The five elements of Andy Raskin's strategic narrative."""
+
+    name_the_enemy = "name_the_enemy"
+    why_now = "why_now"
+    promised_land = "promised_land"
+    obstacles_and_gifts = "obstacles_and_gifts"
+    present_evidence = "present_evidence"
 
 
 @dataclass(frozen=True, slots=True)
-class Anchor:
-    """Score-band language a judgment must cite. Bands are 0-1, 2-3, 4-5."""
-
-    low: str  # 0-1
-    mid: str  # 2-3
-    high: str  # 4-5
-
-
-@dataclass(frozen=True, slots=True)
-class DimensionSpec:
-    key: Dimension
+class RaskinElementSpec:
+    key: RaskinElement
+    number: int
     title: str
-    weight: float
-    question: str
-    anchors: Anchor
+    guidance: str  # what the element means; injected into the Stage B prompt
 
 
-DIMENSIONS: tuple[DimensionSpec, ...] = (
-    DimensionSpec(
-        key=Dimension.clarity,
-        title="Clarity",
-        weight=0.25,
-        question="Can a smart generalist say what this company does after the first two slides?",
-        anchors=Anchor(
-            low="Reader cannot state what the company does.",
-            mid="Understandable only after the whole deck; undefined jargon; the 'what' "
-            "arrives after slide 5.",
-            high="The cover or slide 2 names who it's for and what it does in one concrete "
-            "sentence.",
+RASKIN_ELEMENTS: tuple[RaskinElementSpec, ...] = (
+    RaskinElementSpec(
+        key=RaskinElement.name_the_enemy,
+        number=1,
+        title="Name the Enemy",
+        guidance=(
+            "The strongest pitches identify a single clear 'enemy' — a status quo, incumbent "
+            "model, or way of thinking — that customers and investors can rally against. Score "
+            "high when there is ONE dominant, memorable villain that every slide reinforces; "
+            "score low when the deck lists many diffuse problems with no singular adversary."
         ),
     ),
-    DimensionSpec(
-        key=Dimension.structure,
-        title="Structure",
-        weight=0.20,
-        question="Does the deck follow a load-bearing order?",
-        anchors=Anchor(
-            low="No discernible order, or opens with the technology or team.",
-            mid="Beats present but out of order or wildly disproportionate.",
-            high="All load-bearing slides present, correctly ordered, proportionate.",
+    RaskinElementSpec(
+        key=RaskinElement.why_now,
+        number=2,
+        title="Why Now?",
+        guidance=(
+            "A compelling, explicit reason the market is changing right now — the shift that "
+            "makes this company inevitable today and impossible five years ago. Score high when "
+            "urgency is stated explicitly with concrete technological, market, or regulatory "
+            "shifts; score low when urgency is only implied."
         ),
     ),
-    DimensionSpec(
-        key=Dimension.messaging,
-        title="Messaging",
-        weight=0.20,
-        question="Is there one memorable claim, and is it supported?",
-        anchors=Anchor(
-            low="No identifiable core claim, or several competing ones.",
-            mid="A claim exists but is generic or unsupported.",
-            high="One sharp claim, in the founder's own vocabulary, immediately backed by a "
-            "specific number, named customer, or observed fact.",
+    RaskinElementSpec(
+        key=RaskinElement.promised_land,
+        number=3,
+        title="Tease the Promised Land",
+        guidance=(
+            "A vivid, aspirational vision of the future the company enables — introduced early "
+            "and reinforced throughout. Score high when the future state is specific and lands "
+            "by slide 1-2; score low when the vision is buried mid-deck or stays vague."
         ),
     ),
-    DimensionSpec(
-        key=Dimension.differentiation,
-        title="Differentiation",
-        weight=0.20,
-        question="Why this approach and not the obvious alternative, including doing nothing?",
-        anchors=Anchor(
-            low="No alternative acknowledged.",
-            mid="Names competitors but differentiates on trivially copyable features, or shows "
-            "a competitor matrix rigged so they win every row.",
-            high="Names the real alternative (often the status quo or a spreadsheet), states "
-            "the wedge in one line, and points at something structurally hard to copy.",
+    RaskinElementSpec(
+        key=RaskinElement.obstacles_and_gifts,
+        number=4,
+        title="Three Obstacles and Three Gifts",
+        guidance=(
+            "The core storytelling engine: name the obstacles between today and the promised "
+            "land, then present the company's capabilities as 'magic gifts' that overcome each. "
+            "Score high when obstacles and gifts are explicitly paired as Problem -> Solution "
+            "-> Outcome; score low when investors must assemble that narrative themselves."
         ),
     ),
-    DimensionSpec(
-        key=Dimension.investor_engagement,
-        title="Investor Engagement",
-        weight=0.15,
-        question="Does it answer what an investor is silently asking?",
-        anchors=Anchor(
-            low="Reads as a product brochure.",
-            mid="Some questions answered, ask vague or absent.",
-            high="Anticipates the questions, and the ask is specific (amount, use of funds, the "
-            "milestone it unlocks).",
+    RaskinElementSpec(
+        key=RaskinElement.present_evidence,
+        number=5,
+        title="Present Evidence",
+        guidance=(
+            "Proof the company can make the story come true: clinical or technical validation, "
+            "traction, revenue, named customers, partnerships, and a credible team. Score high "
+            "when strong, specific proof appears early; score low when evidence is thin or "
+            "arrives only at the end."
         ),
     ),
 )
 
-DIMENSION_BY_KEY: dict[Dimension, DimensionSpec] = {d.key: d for d in DIMENSIONS}
+ELEMENT_BY_KEY: dict[RaskinElement, RaskinElementSpec] = {e.key: e for e in RASKIN_ELEMENTS}
 
 
-# --- The expected narrative arc ---------------------------------------------
+# --- Buzzwords (deterministic signal) ----------------------------------------
 
-# Load-bearing order an investor deck is expected to follow (SPEC §7.1 Structure).
-EXPECTED_ARC: tuple[SlideType, ...] = (
-    SlideType.cover,
-    SlideType.problem,
-    SlideType.why_now,
-    SlideType.solution,
-    SlideType.product,
-    SlideType.market,
-    SlideType.traction,
-    SlideType.business_model,
-    SlideType.competition,
-    SlideType.team,
-    SlideType.ask,
-)
-
-
-# --- Buzzwords (curated deterministic signal) --------------------------------
-
-# The canonical hype words called out in SPEC §6.1. `metrics.py` compiles the patterns.
 BUZZWORDS: tuple[str, ...] = (
     "synergy",
     "disruptive",
@@ -189,12 +135,9 @@ BUZZWORDS: tuple[str, ...] = (
     "best-in-class",
     "next-generation",
     "paradigm",
-    "leverage",  # flagged as a verb; the deterministic pass counts all occurrences
+    "leverage",
 )
 
-# (canonical label, case-insensitive regex). Order does not matter; each is counted once
-# per match. "leverage" is counted wherever it appears — the deterministic layer cannot do
-# part-of-speech tagging, and over-counting a genuine noun is a tolerable false positive.
 BUZZWORD_PATTERNS: tuple[tuple[str, str], ...] = (
     ("synergy", r"synerg(?:y|ies|istic)"),
     ("disruptive", r"disrupt(?:ive|ion|ing|ed|s)?"),
@@ -207,78 +150,40 @@ BUZZWORD_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
-# --- Bands -------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class Band:
-    name: str
-    lo: int  # inclusive
-    hi: int  # inclusive
-
-
-BANDS: tuple[Band, ...] = (
-    Band("Rebuild", 0, 39),
-    Band("Major revision", 40, 59),
-    Band("Tighten", 60, 79),
-    Band("Investor-ready", 80, 100),
-)
-
-
 # --- Aggregation -------------------------------------------------------------
 
 
-def dimension_weights() -> dict[Dimension, float]:
-    """Return the weight of each dimension, keyed by :class:`Dimension`."""
-    return {d.key: d.weight for d in DIMENSIONS}
+def aggregate_overall(scores: Mapping[RaskinElement | str, float]) -> float:
+    """Mean of the five element scores (0-10), rounded to one decimal.
 
-
-def aggregate_overall(scores: Mapping[Dimension | str, int]) -> int:
-    """Combine 0-5 dimension scores into a 0-100 overall score.
-
-    ``overall = round(sum(score * weight) / 5 * 100)`` (SPEC §7.1). All five dimensions
-    must be present.
+    Example: 7.5, 6.5, 8.5, 8, 8.5 -> 7.8. All five elements must be present.
     """
-    normalized: dict[Dimension, int] = {}
+    normalized: dict[RaskinElement, float] = {}
     for key, value in scores.items():
-        dim = key if isinstance(key, Dimension) else Dimension(key)
-        normalized[dim] = value
+        element = key if isinstance(key, RaskinElement) else RaskinElement(key)
+        normalized[element] = float(value)
 
-    missing = [d.key for d in DIMENSIONS if d.key not in normalized]
+    missing = [e.key for e in RASKIN_ELEMENTS if e.key not in normalized]
     if missing:
-        raise ValueError(f"missing scores for dimensions: {[d.value for d in missing]}")
+        raise ValueError(f"missing scores for elements: {[e.value for e in missing]}")
 
-    weighted = sum(normalized[d.key] * d.weight for d in DIMENSIONS)
-    return round(weighted / 5 * 100)
-
-
-def band_for(overall: int) -> str:
-    """Return the band name for a 0-100 overall score."""
-    for band in BANDS:
-        if band.lo <= overall <= band.hi:
-            return band.name
-    raise ValueError(f"overall score out of range: {overall}")
+    total = sum(normalized[e.key] for e in RASKIN_ELEMENTS)
+    return round(total / len(RASKIN_ELEMENTS), 1)
 
 
 def render_rubric_text() -> str:
-    """Render the rubric as prose for injection into the Stage B system prompt.
-
-    The rubric lives here as structured data; this is the single place it is flattened to
-    text so the prompt and the tests share one source of truth.
-    """
+    """Render the Raskin framework as prose for the Stage B system prompt."""
     parts: list[str] = [
-        f"RUBRIC v{RUBRIC_VERSION}. Score each dimension 0-5 as a whole number, against "
-        "these anchors ONLY. Never award a 5 for effort.\n"
+        f"FRAMEWORK v{RUBRIC_VERSION} — Andy Raskin's strategic narrative. Score each of the "
+        "five elements 0-10 (halves allowed), against this guidance ONLY.\n"
     ]
-    for spec in DIMENSIONS:
-        parts.append(f"## {spec.title}  (weight {spec.weight:.2f}, key: {spec.key.value})")
-        parts.append(f"Question: {spec.question}")
-        parts.append(f"  0-1 -> {spec.anchors.low}")
-        parts.append(f"  2-3 -> {spec.anchors.mid}")
-        parts.append(f"  4-5 -> {spec.anchors.high}")
+    for spec in RASKIN_ELEMENTS:
+        parts.append(f"## {spec.number}. {spec.title}  (key: {spec.key.value})")
+        parts.append(spec.guidance)
         parts.append("")
-    arc = " -> ".join(t.value for t in EXPECTED_ARC)
-    parts.append(f"Expected narrative arc (for Structure): {arc}")
-    parts.append("Bands: " + " | ".join(f"{b.lo}-{b.hi} {b.name}" for b in BANDS))
-    parts.append("Hype words to distrust (flag, don't reward): " + ", ".join(BUZZWORDS))
+    parts.append(
+        "Scoring guide: 0-3 absent or badly muddled; 4-6 present but generic, implicit, or "
+        "out of order; 7-8 strong and clear; 9-10 exceptional and reinforced throughout the "
+        "deck. Overall alignment is the mean of the five, which will be recomputed."
+    )
     return "\n".join(parts)

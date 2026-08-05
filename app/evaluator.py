@@ -1,15 +1,14 @@
-"""Two-stage LLM orchestration with Python-side verification (SPEC §6.2-6.4).
+"""Two-stage LLM orchestration for the Raskin evaluation.
 
-Stage A parses each slide into a descriptive ``SlideRecord`` via vision. Stage B evaluates
-the whole deck and is forced, via tool use, to emit a single ``EvaluationPayload`` — the
-tool's input schema *is* the payload schema, so no JSON is parsed out of prose. Every
-model-supplied fact is then verified in Python: evidence must cite real slides, quotes must
-match the text layer when one exists, and the overall score is recomputed deterministically
-rather than trusted from the model.
+Stage A parses each slide into a descriptive ``SlideRecord`` via vision. A short cover call
+reads the company name and locates the logo for the report header. Stage B evaluates the
+whole deck against Andy Raskin's framework and is forced, via tool use, to emit a single
+``EvaluationPayload`` — the tool's input schema *is* the payload schema, so no JSON is parsed
+out of prose. The overall score is recomputed deterministically from the element scores.
 
-``FAKE_LLM=1`` short-circuits both stages with a canned, valid payload so the pipeline runs
-without an API key. The model default (`claude-sonnet-5`) comes from settings; both stages
-force a specific tool, so thinking is disabled (a specific ``tool_choice`` is incompatible
+``FAKE_LLM=1`` short-circuits the LLM with a canned, valid payload so the pipeline runs
+without an API key. The model default (`claude-sonnet-5`) comes from settings; every call
+forces a specific tool, so thinking is disabled (a specific ``tool_choice`` is incompatible
 with adaptive thinking).
 """
 
@@ -23,21 +22,21 @@ from functools import lru_cache
 from pathlib import Path
 
 import anthropic
-from pydantic import BaseModel, ValidationError
+import pymupdf
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import Settings
-from app.fake_llm import fake_evaluation_payload, fake_slide_records
+from app.fake_llm import fake_company_name, fake_evaluation_payload, fake_slide_records
 from app.ingest import IngestedDeck, IngestedPage
 from app.metrics import DeckMetrics
 from app.rubric import (
-    Dimension,
+    RaskinElement,
     SlideType,
     TextDensity,
     aggregate_overall,
-    band_for,
     render_rubric_text,
 )
-from app.schemas import DimensionResult, EvaluationPayload, SlideRecord
+from app.schemas import EvaluationPayload, SlideRecord
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +44,12 @@ PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 STAGE_A_BATCH_SIZE = 5
 STAGE_A_MAX_TOKENS = 8000
 STAGE_B_MAX_TOKENS = 16000
+COVER_MAX_TOKENS = 1000
+LOGO_DPI = 200
 
 _SLIDE_PARSE_TOOL = "record_slides"
 _EVALUATE_TOOL = "submit_evaluation"
+_COVER_TOOL = "cover_info"
 
 
 class EvaluationError(Exception):
@@ -60,17 +62,29 @@ class EvaluationError(Exception):
 
 @dataclass(slots=True)
 class EvaluationResult:
-    """The verified payload plus the slide records and model used to produce it."""
+    """The payload, the slide records, the model, and the extracted company logo path."""
 
     payload: EvaluationPayload
     slide_records: list[SlideRecord]
     model: str
+    logo_path: Path | None = None
 
 
 class _SlideBatch(BaseModel):
     """Stage A tool wrapper: a batch of slide records."""
 
     slides: list[SlideRecord]
+
+
+class _CoverInfo(BaseModel):
+    """Cover-call tool output: company name and the logo's bounding box (0-1 coords)."""
+
+    company_name: str = ""
+    logo_found: bool = False
+    x0: float = Field(default=0.0, ge=0, le=1)
+    y0: float = Field(default=0.0, ge=0, le=1)
+    x1: float = Field(default=0.0, ge=0, le=1)
+    y1: float = Field(default=0.0, ge=0, le=1)
 
 
 @lru_cache(maxsize=8)
@@ -147,69 +161,16 @@ def _coerce_slide_record(raw: dict, expected_number: int, page_count: int) -> Sl
     )
 
 
-def _normalize(text: str) -> str:
-    return " ".join(text.split()).casefold()
-
-
-def verify_and_prune(
-    payload: EvaluationPayload, deck: IngestedDeck
-) -> tuple[EvaluationPayload, list[str]]:
-    """Best-effort clean-up of evidence — soft, and never fatal.
-
-    Each filter is applied only when it would leave at least one evidence item, so a
-    dimension is never emptied (which would make the payload invalid) and the pipeline never
-    has to re-run or fail. Real decks bake much of their text into images, so the extracted
-    text layer is often partial; a quote the vision model legitimately read off a slide may
-    simply not appear in that layer. We therefore *prefer* verifiable evidence but keep the
-    model's citations when nothing verifies, rather than blocking the report.
-
-    Preference order per dimension: keep evidence on real slides; among those, keep evidence
-    whose quote matches the text layer. Returns the cleaned payload and a note log.
-    """
-    slide_text = {page.number: page.text for page in deck.pages}
-    page_count = deck.page_count
-    notes: list[str] = []
-    new_dimensions: list[DimensionResult] = []
-
-    for result in payload.dimensions:
-        evidence = list(result.evidence)
-
-        on_real_slides = [e for e in evidence if 1 <= e.slide_number <= page_count]
-        if on_real_slides:
-            if len(on_real_slides) != len(evidence):
-                notes.append(f"{result.dimension}: dropped evidence citing a non-existent slide")
-            evidence = on_real_slides
-        else:
-            notes.append(f"{result.dimension}: all evidence cited missing slides; kept as-is")
-
-        if deck.has_text_layer:
-            matched = [
-                e
-                for e in evidence
-                if _normalize(e.quote) in _normalize(slide_text.get(e.slide_number, ""))
-            ]
-            if matched:
-                if len(matched) != len(evidence):
-                    notes.append(f"{result.dimension}: dropped a quote not found in the text layer")
-                evidence = matched
-            else:
-                notes.append(
-                    f"{result.dimension}: no quote matched the text layer (likely image-baked text); kept as-is"
-                )
-
-        new_dimensions.append(result.model_copy(update={"evidence": evidence}))
-
-    return payload.model_copy(update={"dimensions": new_dimensions}), notes
-
-
 def finalize_scores(payload: EvaluationPayload) -> EvaluationPayload:
-    """Recompute ``overall_score`` and ``band`` from the dimension scores.
-
-    The model's own arithmetic is never trusted — aggregation is deterministic (SPEC §7.1).
-    """
-    scores = {Dimension(d.dimension): d.score for d in payload.dimensions}
-    overall = aggregate_overall(scores)
-    return payload.model_copy(update={"overall_score": overall, "band": band_for(overall)})
+    """Clamp element scores to 0-10 and recompute the overall as their mean."""
+    clamped = [
+        e.model_copy(update={"score": max(0.0, min(10.0, float(e.score)))})
+        for e in payload.elements
+    ]
+    scores = {RaskinElement(e.element): e.score for e in clamped}
+    return payload.model_copy(
+        update={"elements": clamped, "overall_score": aggregate_overall(scores)}
+    )
 
 
 # --- LLM plumbing ------------------------------------------------------------
@@ -386,16 +347,7 @@ def _stage_b_content(
     content: list[dict] = [
         {"type": "text", "text": "SLIDE RECORDS (from Stage A):\n" + _records_digest(records)},
         {"type": "text", "text": "DETERMINISTIC METRICS (ground truth):\n" + _metrics_digest(metrics)},
-        {
-            "type": "text",
-            "text": (
-                "Images of the first three slides follow for direct inspection of the opening."
-                if deck.has_text_layer
-                else "This deck has NO text layer — evidence quotes are transcribed from the "
-                "images and may differ slightly from the original. Images of the first three "
-                "slides follow."
-            ),
-        },
+        {"type": "text", "text": "Images of the first three slides follow for direct inspection of the opening."},
     ]
     for page in deck.pages[:3]:
         content.append(_image_block(page))
@@ -418,7 +370,7 @@ def _stage_b(
     schema = EvaluationPayload.model_json_schema()
     extra: str | None = None
 
-    for attempt in range(2):  # one retry with the validation error appended (SPEC §6.4)
+    for attempt in range(2):  # one retry with the validation error appended
         raw = _invoke_tool(
             client,
             settings=settings,
@@ -426,7 +378,7 @@ def _stage_b(
             content=_stage_b_content(deck, metrics, records, extra),
             tool_name=_EVALUATE_TOOL,
             tool_schema=schema,
-            tool_description="Submit the complete deck evaluation as an EvaluationPayload.",
+            tool_description="Submit the complete Raskin evaluation as an EvaluationPayload.",
             max_tokens=STAGE_B_MAX_TOKENS,
         )
         try:
@@ -435,9 +387,81 @@ def _stage_b(
             logger.warning("Stage B payload invalid (attempt %d): %s", attempt + 1, exc)
             extra = (
                 "Your previous response failed validation with these errors. Fix them and "
-                f"resubmit exactly 5 dimensions and 3 rewrites:\n{exc}"
+                f"resubmit exactly the 5 Raskin elements:\n{exc}"
             )
     raise EvaluationError("The evaluation could not be completed correctly. Please try again.")
+
+
+# --- Cover: company name + logo ----------------------------------------------
+
+
+def _extract_cover(
+    client: anthropic.Anthropic, deck: IngestedDeck, settings: Settings
+) -> tuple[str, Path | None]:
+    """Read the company name and crop the logo from the cover slide. Never fatal."""
+    if not deck.pages:
+        return "", None
+    cover = deck.pages[0]
+    content = [
+        {
+            "type": "text",
+            "text": (
+                "This is the cover slide of a pitch deck. Return the company's name, and the "
+                "bounding box of its logo as fractions of the image (x0,y0 top-left, x1,y1 "
+                "bottom-right, each 0-1). Set logo_found=false if there is no clear logo."
+            ),
+        },
+        _image_block(cover),
+        {"type": "text", "text": f"Call {_COVER_TOOL}."},
+    ]
+    try:
+        raw = _invoke_tool(
+            client,
+            settings=settings,
+            system="You extract a company name and logo location from a pitch-deck cover.",
+            content=content,
+            tool_name=_COVER_TOOL,
+            tool_schema=_CoverInfo.model_json_schema(),
+            tool_description="Report the company name and logo bounding box.",
+            max_tokens=COVER_MAX_TOKENS,
+        )
+        info = _CoverInfo.model_validate(raw)
+    except (EvaluationError, ValidationError) as exc:
+        logger.info("Cover extraction failed (non-fatal): %s", exc)
+        return "", None
+
+    logo_path = _crop_logo(deck, info) if info.logo_found else None
+    return info.company_name.strip(), logo_path
+
+
+def _crop_logo(deck: IngestedDeck, info: _CoverInfo) -> Path | None:
+    """Render the logo region of the cover to a PNG. Returns None if the box is implausible."""
+    if not (0 <= info.x0 < info.x1 <= 1 and 0 <= info.y0 < info.y1 <= 1):
+        return None
+    width_frac, height_frac = info.x1 - info.x0, info.y1 - info.y0
+    if width_frac < 0.02 or height_frac < 0.01 or width_frac * height_frac > 0.9:
+        return None  # too tiny or basically the whole slide
+
+    try:
+        doc = pymupdf.open(deck.source_path)
+        try:
+            page = doc[0]
+            rect = page.rect
+            clip = pymupdf.Rect(
+                rect.x0 + info.x0 * rect.width,
+                rect.y0 + info.y0 * rect.height,
+                rect.x0 + info.x1 * rect.width,
+                rect.y0 + info.y1 * rect.height,
+            )
+            pix = page.get_pixmap(dpi=LOGO_DPI, clip=clip, alpha=False)
+            out_path = deck.source_path.parent / "logo.png"
+            pix.save(out_path)
+            return out_path
+        finally:
+            doc.close()
+    except Exception as exc:  # noqa: BLE001 — logo is cosmetic; never fail the report over it
+        logger.info("Logo crop failed (non-fatal): %s", exc)
+        return None
 
 
 # --- Orchestration -----------------------------------------------------------
@@ -448,28 +472,27 @@ def evaluate_deck(
 ) -> EvaluationResult:
     """Run the full evaluation pipeline and return a result.
 
-    Verification is best-effort and never fatal — the only hard failures are an unreachable
-    API or a Stage B payload that stays schema-invalid after one retry. Raises
-    :class:`EvaluationError` (user-safe message) in those cases.
+    The only hard failures are an unreachable API or a Stage B payload that stays
+    schema-invalid after one retry. Cover/logo extraction is best-effort and never fatal.
     """
     if settings.fake_llm:
         records = fake_slide_records(deck)
-        payload = fake_evaluation_payload(deck, metrics)
-        payload, _notes = verify_and_prune(payload, deck)
-        return EvaluationResult(payload, records, model="fake-llm")
+        payload = finalize_scores(fake_evaluation_payload(deck, metrics))
+        return EvaluationResult(payload, records, model="fake-llm", logo_path=None)
 
     client = _client(settings)
     logger.info("Evaluating deck %s (~%d image tokens)", deck.deck_id, deck.estimated_image_tokens)
 
     records = _stage_a(client, deck, settings)
+    company_name, logo_path = _extract_cover(client, deck, settings)
     payload = _stage_b(client, deck, metrics, records, settings)
 
-    payload, notes = verify_and_prune(payload, deck)
-    for note in notes:
-        logger.info("verification: %s", note)
+    # Prefer the cover-call name if the evaluation left it blank.
+    if not payload.company_name.strip() and company_name:
+        payload = payload.model_copy(update={"company_name": company_name})
 
     payload = finalize_scores(payload)
-    return EvaluationResult(payload, records, model=settings.anthropic_model)
+    return EvaluationResult(payload, records, model=settings.anthropic_model, logo_path=logo_path)
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -488,6 +511,13 @@ def _main() -> None:
     parser.add_argument("pdf", type=Path, help="Path to the deck PDF")
     args = parser.parse_args()
 
+    import sys
+
+    try:  # avoid cp1252 crashes when printing unicode payloads on Windows consoles
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
 
@@ -502,8 +532,8 @@ def _main() -> None:
     result = evaluate_deck(deck, metrics, settings)
     print(result.payload.model_dump_json(indent=2))
     print(
-        f"\n[model={result.model} overall={result.payload.overall_score} "
-        f"band={result.payload.band!r} slides={len(result.slide_records)}]"
+        f"\n[model={result.model} company={result.payload.company_name!r} "
+        f"overall={result.payload.overall_score}/10 logo={result.logo_path}]"
     )
 
 

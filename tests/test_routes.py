@@ -65,10 +65,10 @@ def test_upload_evaluate_and_download(client, fixture_decks):
     status = _wait_for_job(client, job_id)
     assert status["status"] == "done", status
 
-    # Report page renders with the score and band.
+    # Report page renders with the Raskin score and download link.
     report = client.get(f"/report/{deck_id}")
     assert report.status_code == 200
-    assert "out of 100" in report.text
+    assert "Raskin alignment / 10" in report.text
     assert "Download the full PDF report" in report.text
 
     # Download endpoint: attachment with a clean filename, real PDF bytes.

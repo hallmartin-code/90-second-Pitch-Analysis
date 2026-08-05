@@ -3,18 +3,35 @@
 A Python web app where a founder uploads their **pitch deck as a PDF** and downloads an
 **evaluation report as a PDF**.
 
-The report scores the deck on five dimensions — **Clarity, Structure, Messaging,
-Differentiation, Investor Engagement** — with every judgment tied to a specific slide,
-and delivers rewrites that make the opening land with an investor in under 30 seconds.
+The report scores the deck against **Andy Raskin's strategic-narrative framework** — the
+five elements behind category-defining pitches — and reads like the manual analysis a
+partner would write, with a concrete recommendation for every section.
+
+## The framework (Raskin, /10)
+
+Each element is scored 0–10; the overall alignment is their mean.
+
+1. **Name the Enemy** — one dominant villain the deck rallies against.
+2. **Why Now?** — an explicit reason the market is changing right now.
+3. **Tease the Promised Land** — a vivid future state, introduced early.
+4. **Three Obstacles and Three Gifts** — obstacles paired with the "magic gifts" that beat them.
+5. **Present Evidence** — proof the story can come true (traction, validation, team).
 
 ## How it works
 
 1. Every page of the deck is rasterized to an image and read with **Claude's vision API**
    (text extraction alone is blind to layout, charts, and text baked into images).
-2. A deterministic pass computes readability, buzzword, and structure metrics as ground truth.
-3. Stage A parses each slide into structured records; Stage B scores the deck against a
-   fixed rubric via forced tool-use.
-4. A ReportLab PDF report is rendered and offered for download.
+2. A deterministic pass computes readability and buzzword metrics as ground truth.
+3. Stage A parses each slide into structured records; a short cover call reads the company
+   name and locates the logo; Stage B scores the deck against the Raskin framework via forced
+   tool-use, and the overall score is recomputed in Python as the mean of the five.
+4. A document-style **ReportLab PDF** is rendered — company logo, title, Overall Assessment,
+   one section per element (Score / Evaluation / Recommendation), Obstacles & Gifts table,
+   Summary Scorecard, a suggested rebuild flow, and a TEN Capital footer — and offered for
+   download.
+
+The report's schema is deliberately **tolerant** (unknown fields ignored, text fields optional,
+scores clamped in code) so a real deck's evaluation never fails validation.
 
 ## Stack
 
@@ -83,7 +100,22 @@ evaluation, handled by an in-process background task (no Celery/Redis).
 
 Secrets live only in `.env` (gitignored). Never commit real keys.
 
+## Branding assets
+
+- **Company logo** — extracted automatically from each deck's cover slide; nothing to
+  configure.
+- **TEN Capital footer logo** — drop a PNG (ideally transparent) at
+  `app/static/ten_capital_logo.png`. It then appears in every report's footer. If the file is
+  absent, the footer renders the text `Compiled on M/D/YYYY by TEN Capital Network` only.
+
 ## Build status
+
+> The evaluation was migrated from the original 5-dimension investor rubric to **Andy
+> Raskin's strategic-narrative framework** (v2). The report is now document-style. If you are
+> upgrading an existing deployment, **delete the old database** (`data/app.db`, or the file on
+> your Railway volume) once — the evaluation table's columns changed and old rows are
+> incompatible.
+
 
 - [x] **Phase 1 — Skeleton**: app factory, health route, styled landing page, config, README.
 - [x] **Phase 2 — Ingestion**: PDF validation, per-page rasterization + thumbnails, text
@@ -103,3 +135,7 @@ Secrets live only in `.env` (gitignored). Never commit real keys.
 - [x] **Phase 7 — Hardening**: Railway deploy config (`railway.json`, `nixpacks.toml`,
       `Procfile`), volume-backed persistence docs, size/page-limit enforcement + route test,
       token-cost logging, security review. 82 tests green (+1 live, auto-skipped).
+- [x] **Framework migration (Raskin, v2)**: replaced the 5-dimension rubric with Andy
+      Raskin's strategic-narrative framework; document-style report with company-logo
+      extraction and the TEN Capital footer; tolerant schema (no evidence/quote verification).
+      Verified live end-to-end. 67 tests green (+1 live, auto-skipped).

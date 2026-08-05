@@ -24,6 +24,10 @@ from app.rubric import RUBRIC_VERSION
 
 logger = logging.getLogger(__name__)
 
+# Drop the TEN Capital Network logo here (PNG, ideally transparent) to show it in every
+# report footer. Absent → the footer renders the text only.
+TEN_LOGO_PATH = Path(__file__).resolve().parent / "static" / "ten_capital_logo.png"
+
 
 def _advance(session: Session, job: Job, status: JobStatus, **fields: object) -> None:
     job.status = status.value
@@ -86,12 +90,9 @@ def run_evaluation(job_id: str, deck_id: str, data: bytes, deck_name: str) -> No
             report_path: Path = settings.storage_path / "decks" / deck_id / "report.pdf"
             render_report(
                 result.payload,
-                deck,
-                metrics,
                 report_path,
-                deck_name=deck_name,
-                slide_records=result.slide_records,
-                model=result.model,
+                company_logo_path=result.logo_path,
+                ten_logo_path=TEN_LOGO_PATH if TEN_LOGO_PATH.exists() else None,
             )
 
             session.add(
@@ -101,14 +102,19 @@ def run_evaluation(job_id: str, deck_id: str, data: bytes, deck_name: str) -> No
                     job_id=job_id,
                     model=result.model,
                     rubric_version=RUBRIC_VERSION,
+                    company_name=result.payload.company_name,
                     overall_score=result.payload.overall_score,
-                    band=result.payload.band,
                     payload_json=result.payload.model_dump_json(),
                     report_path=str(report_path),
                 )
             )
             _advance(session, job, JobStatus.done, page_current=deck.page_count)
-            logger.info("Job %s complete: %s / %s", job_id, result.payload.overall_score, result.payload.band)
+            logger.info(
+                "Job %s complete: %s overall %s/10",
+                job_id,
+                result.payload.company_name,
+                result.payload.overall_score,
+            )
 
         except (IngestError, EvaluationError) as exc:
             logger.info("Job %s failed cleanly: %s", job_id, exc.message)

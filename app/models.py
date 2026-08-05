@@ -69,8 +69,8 @@ class Evaluation(SQLModel, table=True):
     job_id: str
     model: str
     rubric_version: str
-    overall_score: int
-    band: str
+    company_name: str = ""
+    overall_score: float = 0.0
     payload_json: str
     report_path: str
     created_at: datetime = Field(default_factory=_utcnow)
